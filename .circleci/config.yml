@@ -1,0 +1,277 @@
+version: 2.1
+
+defaults: &defaults
+  working_directory: /tmp/material-ui
+  docker:
+    - image: circleci/node:8.15
+# CircleCI has disabled the cache across forks for security reasons.
+# Following their official statement, it was a quick solution, they
+# are working on providing this feature back with appropriate security measures.
+# https://discuss.circleci.com/t/saving-cache-stopped-working-warning-skipping-this-step-disabled-in-configuration/24423/21
+#
+# restore_repo: &restore_repo
+#   restore_cache:
+#     key: v1-repo-{{ .Branch }}-{{ .Revision }}
+
+commands:
+  install_js:
+    steps:
+      - restore_cache:
+          keys:
+             - v2-yarn-sha-{{ checksum "yarn.lock" }}
+             - v2-yarn-sha-
+      - run:
+          name: Install js dependencies
+          command: yarn
+  prepare_chrome_headless:
+    steps:
+      - run:
+          name: Install dependencies for Chrome Headless
+          # From https://github.com/GoogleChrome/puppeteer/blob/811415bc8c47f7882375629b57b3fe186ad61ed4/docs/troubleshooting.md#chrome-headless-doesnt-launch
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y --force-yes gconf-service libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils wget
+      
+
+jobs:
+  checkout:
+    <<: *defaults
+    steps:
+      - checkout
+      - install_js
+      - run:
+          name: Should not have any git not staged
+          command: git diff --exit-code
+      - save_cache:
+          key: v2-yarn-sha-{{ checksum "yarn.lock" }}
+          paths:
+            - ~/.cache/yarn/v4
+  test_unit:
+    <<: *defaults
+    steps:
+      - checkout
+      - install_js
+      - run:
+          name: Check if yarn prettier was run
+          command: yarn prettier check-changed
+      - run:
+          name: Lint
+          command: yarn lint:ci
+      - run:
+          name: Lint JSON
+          command: yarn jsonlint
+      - run:
+          name: Tests TypeScript definitions
+          command: yarn typescript
+      - run:
+          name: Tests fake browser
+          command: yarn test:coverage
+      - run:
+          name: Check coverage generated
+          command: |
+            if ! [[ -s coverage/lcov.info ]]
+            then
+              exit 1
+            fi
+      - run:
+          name: Coverage
+          command: bash <(curl -s https://codecov.io/bash) -Z -C $CIRCLE_SHA1
+  test_material-ui-x:
+    <<: *defaults
+    steps:
+      - checkout
+      - install_js
+      - run:
+          name: material-ui-icons
+          command: |
+            # latest commit
+            LATEST_COMMIT=$(git rev-parse HEAD)
+
+            # latest commit where packages/material-ui-icons was changed
+            FOLDER_COMMIT=$(git log -1 --format=format:%H --full-diff packages/material-ui-icons)
+
+            if [ $FOLDER_COMMIT = $LATEST_COMMIT ]; then
+              echo "changes, let's run the tests"
+              cd packages/material-ui-icons && yarn test
+            else
+              echo "no changes"
+            fi
+      - run:
+          name: material-ui-codemod
+          command: |
+            # latest commit
+            LATEST_COMMIT=$(git rev-parse HEAD)
+
+            # latest commit where packages/material-ui-codemod was changed
+            FOLDER_COMMIT=$(git log -1 --format=format:%H --full-diff packages/material-ui-codemod)
+
+            if [ $FOLDER_COMMIT = $LATEST_COMMIT ]; then
+              echo "changes, let's run the tests"
+              cd packages/material-ui-codemod && yarn test
+            else
+              echo "no changes"
+            fi
+      - run:
+          name: material-ui-lab
+          command: |
+            # latest commit
+            LATEST_COMMIT=$(git rev-parse HEAD)
+
+            # latest commit where packages/material-ui-lab was changed
+            FOLDER_COMMIT=$(git log -1 --format=format:%H --full-diff packages/material-ui-lab)
+
+            if [ $FOLDER_COMMIT = $LATEST_COMMIT ]; then
+              echo "changes, let's run the tests"
+              cd packages/material-ui-lab && yarn test
+            else
+              echo "no changes"
+            fi
+      - run:
+          name: eslint-plugin-material-ui
+          command: |
+            # latest commit
+            LATEST_COMMIT=$(git rev-parse HEAD)
+
+            # latest commit where packages/eslint-plugin-material-ui was changed
+            FOLDER_COMMIT=$(git log -1 --format=format:%H --full-diff packages/eslint-plugin-material-ui)
+
+            if [ $FOLDER_COMMIT = $LATEST_COMMIT ]; then
+              echo "changes, let's run the tests"
+              cd packages/eslint-plugin-material-ui && yarn test
+            else
+              echo "no changes"
+            fi
+  test_build:
+    <<: *defaults
+    steps:
+      - checkout
+      - install_js
+      - run:
+          name: Transpile TypeScript demos
+          command: yarn docs:typescript:formatted
+      - run:
+          name: Are the compiled TypeScript demos equivalent to the JavaScript demos?
+          command: git diff --exit-code
+      - run:
+          name: Can we generate the documentation?
+          command: yarn docs:api
+      - run:
+          name: '`yarn docs:api` changes commited?'
+          command: git diff --exit-code
+      - run:
+          name: Can we generate the @material-ui/core build?
+          command: cd packages/material-ui && yarn build
+      - run:
+          name: Can we generate the @material-ui/lab build?
+          command: cd packages/material-ui-lab && yarn build
+      - run:
+          name: Can we generate the @material-ui/styles build?
+          command: cd packages/material-ui-styles && yarn build
+      - run:
+          name: Can we generate the @material-ui/utils build?
+          command: cd packages/material-ui-utils && yarn build
+      - run:
+          name: Can we generate the @material-ui/system build?
+          command: cd packages/material-ui-system && yarn build
+      - run:
+          name: Prepare persisting workspace
+          command: tar cfvz builds.tar.gz packages/*/build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - builds.tar.gz
+            # rollup snapshot
+            - packages/material-ui/size-snapshot.json
+      - prepare_chrome_headless
+      - run:
+          name: Test umd release
+          command: yarn test:umd
+  test_browser:
+    <<: *defaults
+    steps:
+      - checkout
+      - install_js
+      - prepare_chrome_headless
+      - run:
+          name: Tests real browsers
+          command: yarn test:karma
+  test_regressions:
+    <<: *defaults
+    docker:
+      - image: circleci/node:8.15
+      - image: selenium/standalone-chrome:3.11.0
+    steps:
+      - checkout
+      - install_js
+      - run:
+          name: Visual regression tests
+          command: |
+            DOCKER_TEST_URL=http://$(ip addr show lo | grep "inet\b" | awk '{print $2}' | cut -d/ -f1):3090 yarn test:regressions
+            yarn argos
+  size_snapshot:
+    <<: *defaults
+    steps:
+      - checkout
+      - install_js
+      - attach_workspace:
+          at: /tmp/workspace
+      - run:
+          name: Restore build
+          command: |
+            mv /tmp/workspace/builds.tar.gz ./
+            tar xfvz builds.tar.gz
+            mv /tmp/workspace/packages/material-ui/size-snapshot.json packages/material-ui/size-snapshot.json
+      # Netlify already do it for us but we need to check the size.
+      - run:
+          name: Can we build the docs?
+          command: yarn docs:build
+      - run:
+          name: Create a size snapshot
+          command: yarn size:snapshot
+      # downloaded by aws lambda to s3 bucket
+      # lambda allowes us to limit this to mui-org-branches-only while hiding credentials
+      # that allow write access to s3
+      - store_artifacts:
+          path: size-snapshot.json
+      # for debugging purposes, this is created by webpack called from size:snapshot
+      - store_artifacts:
+          path: scripts/sizeSnapshot/build/stats.json
+      - run:
+          name: Possibly persist size snapshot
+          command: |
+            if [ -z "$CI_PULL_REQUEST" ]; then
+              echo "no pull request; lets persist the size snapshot"
+              curl -X PUT --header "x-api-key: $CIRCLE_AWS_API_KEY" https://t6nulys5kl.execute-api.us-east-1.amazonaws.com/v1/persist-size-snapshot?build-id=$CIRCLE_BUILD_NUM
+            else
+              echo "pull request; let's run dangerJS"
+              yarn danger ci
+            fi
+workflows:
+  version: 2
+  pipeline:
+    jobs:
+      - checkout:
+          filters:
+            branches:
+              ignore: l10n
+      - test_unit:
+          requires:
+            - checkout
+      - test_material-ui-x:
+          requires:
+            - checkout
+      - test_browser:
+          requires:
+            - checkout
+      - test_build:
+          requires:
+            - checkout
+      - test_regressions:
+          requires:
+            - test_material-ui-x
+            - test_unit
+            - test_browser
+            - test_build
+      - size_snapshot:
+          requires:
+            - test_build
